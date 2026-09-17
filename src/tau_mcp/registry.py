@@ -65,6 +65,17 @@ class ServerRegistry:
         self._namespace_owners = {
             namespace: tuple(owners) for namespace, owners in namespace_owners.items()
         }
+        self._reserved_namespaces = tuple(
+            sorted(
+                (
+                    namespace
+                    for namespace in self._namespace_owners
+                    if "__" in namespace
+                ),
+                key=len,
+                reverse=True,
+            )
+        )
         collision_diagnostics = tuple(
             ConfigDiagnostic(
                 f"sanitized server namespace collision `{namespace}`: "
@@ -73,10 +84,18 @@ class ServerRegistry:
             for namespace, owners in self._namespace_owners.items()
             if len(owners) > 1
         )
+        reserved_diagnostics = tuple(
+            ConfigDiagnostic(
+                f"sanitized server namespace `{namespace}` contains reserved "
+                "delimiter `__` and is unavailable for qualified MCP tool addressing"
+            )
+            for namespace in self._reserved_namespaces
+        )
         self.cache = cache
         self.diagnostics: tuple[ConfigDiagnostic, ...] = (
             *config.diagnostics,
             *collision_diagnostics,
+            *reserved_diagnostics,
         )
 
     @property
@@ -207,8 +226,9 @@ class ServerRegistry:
 
     def namespace_available(self, server_name: str) -> bool:
         self._assert_active()
-        owners = self._namespace_owners.get(sanitize_server_name(server_name), ())
-        return owners == (server_name,)
+        namespace = sanitize_server_name(server_name)
+        owners = self._namespace_owners.get(namespace, ())
+        return "__" not in namespace and owners == (server_name,)
 
     def last_activity(self, name: str) -> float | None:
         self._assert_active()
@@ -394,6 +414,12 @@ class ServerRegistry:
             raise McpError(f"MCP server `{name}` is not configured") from exc
 
     def _resolve_server(self, qualified_name: str) -> tuple[_ManagedServer, str]:
+        for namespace in self._reserved_namespaces:
+            if qualified_name.startswith(f"{namespace}__"):
+                raise McpError(
+                    f"MCP server namespace `{namespace}` is unavailable because it "
+                    "contains reserved delimiter `__`"
+                )
         if "__" not in qualified_name:
             raise McpError(self._unknown_tool_message(qualified_name))
         prefix, tool_name = qualified_name.split("__", 1)

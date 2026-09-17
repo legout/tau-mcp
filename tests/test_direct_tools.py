@@ -258,3 +258,81 @@ def test_sanitized_namespace_collision_is_diagnostic_and_registers_nothing(
         await runtime.aclose()
 
     asyncio.run(scenario())
+
+
+def _assert_reserved_namespace_rejected(
+    tmp_path: Path, *, with_shorter_prefix: bool
+) -> None:
+    tau_home = tmp_path / ".tau"
+    tau_home.mkdir()
+    pid_file = tmp_path / "pids.txt"
+    event_file = tmp_path / "events.txt"
+    server: dict[str, object] = {
+        "command": sys.executable,
+        "args": [
+            str(FAKE_SERVER),
+            "--pid-file",
+            str(pid_file),
+            "--event-file",
+            str(event_file),
+        ],
+        "directTools": True,
+        "idleTimeout": 0,
+    }
+    servers = {"my__server": server}
+    if with_shorter_prefix:
+        servers["my"] = server
+    config_path = tau_home / "mcp.json"
+    config_path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    config = load_config(config_path, environment={"HOME": str(tmp_path)})
+    cache = CacheStore(tau_home / "mcp-cache")
+    for configured_server in config.servers.values():
+        cache.write(
+            configured_server,
+            (ToolMetadata("echo", "Echo", ECHO_SCHEMA),),
+        )
+
+    paths = TauPaths(home=tau_home, agents_home=tmp_path / ".agents")
+    recording_ui = RecordingUi()
+    runtime = ExtensionRuntime(built_in_extensions=(), paths=paths, ui=recording_ui)
+    runtime.load(
+        TauResourcePaths(root=tau_home, agents_root=paths.agents_home, paths=paths),
+        extra_paths=(ROOT,),
+        include_resource_dirs=False,
+    )
+    registered = {tool.name for tool in runtime.extension_tools}
+    expected = {"mcp", "my__echo"} if with_shorter_prefix else {"mcp"}
+    assert registered == expected
+    assert "my__server__echo" not in registered
+    assert any(
+        "my__server" in message and "reserved delimiter" in message
+        for message in recording_ui.messages
+    )
+
+    async def scenario() -> None:
+        try:
+            proxy = next(tool for tool in runtime.extension_tools if tool.name == "mcp")
+            result = await proxy.execute(
+                "reserved",
+                {"tool": "my__server__echo", "args": {"value": "wrong"}},
+            )
+            assert "my__server" in result.text
+            assert "reserved delimiter" in result.text
+            assert not pid_file.exists()
+        finally:
+            await runtime.emit_session_shutdown("quit")
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_reserved_delimiter_namespace_is_diagnostic_and_unavailable(
+    tmp_path: Path,
+) -> None:
+    _assert_reserved_namespace_rejected(tmp_path, with_shorter_prefix=False)
+
+
+def test_reserved_namespace_never_falls_through_to_shorter_server(
+    tmp_path: Path,
+) -> None:
+    _assert_reserved_namespace_rejected(tmp_path, with_shorter_prefix=True)
