@@ -37,16 +37,14 @@ The top-level shape is Claude-compatible:
 ```json
 {
   "mcpServers": {
-    "ariadne": {
-      "command": "/home/me/coding/ariadne/.venv/bin/python",
-      "args": ["-m", "ariadne.serve", "--db", "data/demo.db"],
-      "env": {"ARIADNE_LOG": "warning"},
-      "cwd": "/home/me/coding/ariadne",
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
       "lifecycle": "lazy",
       "idleTimeout": 10,
       "requestTimeoutMs": 120000,
-      "directTools": ["run_query"],
-      "includeTools": ["run_*"],
+      "directTools": ["fetch"],
+      "includeTools": ["fetch"],
       "excludeTools": ["*_unsafe"],
       "disabled": false
     },
@@ -85,19 +83,20 @@ server entries are skipped with a diagnostic rather than blocking the session.
 HTTP-oriented fields such as `url`, `headers`, and `auth` are diagnosed as
 unsupported in v1.
 
-The `filesystem` entry uses the official
+The `fetch` entry uses the official Python
+[`mcp-server-fetch`](https://github.com/modelcontextprotocol/servers/tree/main/src/fetch)
+server. It provides a `fetch` tool that retrieves a URL as Markdown. The
+`filesystem` entry uses the official
 [`@modelcontextprotocol/server-filesystem`](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)
 server. Replace `/home/me/projects` with the directories Tau may access; the
 server cannot access paths outside that allowlist.
 
-### Migrating ariadne from `.mcp.json`
+### Configuring the fetch server
 
-Copy the existing `ariadne` entry from the project's `.mcp.json` into the
-`mcpServers` object in `~/.tau/mcp.json`. Keep its `command`, `args`, and `cwd`;
-set `"lifecycle": "lazy"` and, for long database queries,
-`"requestTimeoutMs": 120000`. Merge with any existing global servers instead
-of replacing them. The project `.mcp.json` can remain for other hosts—tau-mcp
-does not read or modify it.
+Add the `fetch` entry shown above to the `mcpServers` object in
+`~/.tau/mcp.json`, then merge it with any existing global servers instead of
+replacing them. The project `.mcp.json` can remain for other hosts—tau-mcp does
+not read or modify it.
 
 ## Use the proxy
 
@@ -105,10 +104,10 @@ The `mcp` tool accepts one operation at a time. Representative payloads are:
 
 ```json
 {"search": "query"}
-{"connect": "ariadne"}
-{"tool": "ariadne__run_query", "args": {"sql": "select 1"}}
-{"tool": "ariadne__run_query", "args": "{\"sql\":\"select 1\"}"}
-{"disconnect": "ariadne"}
+{"connect": "fetch"}
+{"tool": "fetch__fetch", "args": {"url": "https://example.com"}}
+{"tool": "fetch__fetch", "args": "{\"url\":\"https://example.com\"}"}
+{"disconnect": "fetch"}
 ```
 
 `search` reads cached metadata and does not start a server. A new server has no
@@ -124,10 +123,10 @@ command.
 ## Opt in to direct tools
 
 By default only the proxy is registered. Set `directTools` to `true` for every
-selected server tool or to an original-name list such as `["run_query"]`.
-Selected tools appear as native Tau tools such as `ariadne__run_query`, retain
-the MCP server's exact JSON input schema, and still execute through the shared
-MCP connection registry. The `mcp` proxy always remains available.
+selected server tool or to an original-name list such as `["fetch"]`.
+Selected tools appear as native Tau tools such as `fetch__fetch`, retain the MCP
+server's exact JSON input schema, and still execute through the shared MCP
+connection registry. The `mcp` proxy always remains available.
 
 `includeTools` narrows the opt-in set with standard glob patterns, then
 `excludeTools` removes matches. Cached definitions are registered at startup;
@@ -174,5 +173,5 @@ uv run pytest
 ```
 
 Tests install into temporary Tau directories and use a local fake MCP server;
-they never read or write `~/.tau/mcp.json`. A real ariadne query is deliberately
+they never read or write `~/.tau/mcp.json`. A real fetch request is deliberately
 a separate, explicitly authorized manual check.
