@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import cast
 
 from tau_coding.commands import CommandContext, CommandSession
+from tau_coding.extension_installer import install_extension
 from tau_coding.extensions.runtime import ExtensionRuntime
 from tau_coding.paths import TauPaths
 from tau_coding.resources import TauResourcePaths
@@ -230,3 +231,22 @@ def test_runtime_load_registers_only_proxy_and_status_command_without_spawning(
     assert search_result.text.startswith('Found 1 tool matching "query":')
     assert "alpha__query\n  Query local metadata\n  Parameters:" in search_result.text
     assert '"type": "object"' in search_result.text
+
+
+def test_package_installs_and_loads_from_temporary_tau_home(tmp_path: Path) -> None:
+    tau_home = tmp_path / ".tau"
+    paths = TauPaths(home=tau_home, agents_home=tmp_path / ".agents")
+
+    destination = install_extension(str(ROOT), extensions_dir=paths.user_extensions_dir)
+    assert destination == paths.user_extensions_dir / ROOT.name
+    assert (destination / "src" / "tau_mcp" / "extension.py").is_file()
+
+    runtime = ExtensionRuntime(built_in_extensions=(), paths=paths)
+    runtime.load(
+        TauResourcePaths(root=tau_home, agents_root=paths.agents_home, paths=paths)
+    )
+
+    assert not runtime.diagnostics
+    assert [tool.name for tool in runtime.extension_tools] == ["mcp"]
+    assert runtime.build_command_registry().get("mcp") is not None
+    assert not (tau_home / "mcp.json").exists()
