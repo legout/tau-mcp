@@ -12,6 +12,7 @@ from tau_coding.extensions.api import (
 
 from .cache import CacheStore  # ty: ignore[unresolved-import]
 from .config import load_config  # ty: ignore[unresolved-import]
+from .direct import DirectToolRegistrar  # ty: ignore[unresolved-import]
 from .proxy import create_proxy_tool  # ty: ignore[unresolved-import]
 from .registry import ServerRegistry  # ty: ignore[unresolved-import]
 
@@ -22,6 +23,11 @@ def setup(tau: ExtensionAPI) -> None:
     config = load_config(home / "mcp.json", environment=os.environ)
     registry = ServerRegistry(config, CacheStore(home / "mcp-cache"))
     tau.register_tool(create_proxy_tool(registry))
+    direct_tools = DirectToolRegistrar(tau, registry)
+    registry.set_tool_discovery_callback(direct_tools.register_discovered)
+    direct_tools.register_cached()
+    for diagnostic in registry.diagnostics:
+        tau.context.ui.notify(diagnostic.message, "warning")
 
     async def session_start(_event: object, _context: ExtensionContext) -> None:
         await registry.start()

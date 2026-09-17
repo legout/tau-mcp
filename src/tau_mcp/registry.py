@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
 from tau_coding.extensions.api import ExtensionError
@@ -15,6 +15,9 @@ from .client import JsonValue, McpClient, McpError, ToolCallResult
 from .config import ConfigDiagnostic, McpConfig, ServerConfig
 
 _STALE_MESSAGE = "MCP registry is stale after session shutdown"
+type ToolDiscoveryCallback = Callable[
+    [ServerConfig, tuple[ToolMetadata, ...]], tuple[str, ...]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +56,28 @@ class ServerRegistry:
         }
         self._handshake_timeout = handshake_timeout
         self._active = True
+        self._tool_discovery_callback: ToolDiscoveryCallback | None = None
+        namespace_owners: dict[str, list[str]] = {}
+        for server in self._managed.values():
+            namespace_owners.setdefault(
+                sanitize_server_name(server.config.name), []
+            ).append(server.config.name)
+        self._namespace_owners = {
+            namespace: tuple(owners) for namespace, owners in namespace_owners.items()
+        }
+        collision_diagnostics = tuple(
+            ConfigDiagnostic(
+                f"sanitized server namespace collision `{namespace}`: "
+                f"{', '.join(owners)}",
+            )
+            for namespace, owners in self._namespace_owners.items()
+            if len(owners) > 1
+        )
         self.cache = cache
-        self.diagnostics: tuple[ConfigDiagnostic, ...] = config.diagnostics
+        self.diagnostics: tuple[ConfigDiagnostic, ...] = (
+            *config.diagnostics,
+            *collision_diagnostics,
+        )
 
     @property
     def servers(self) -> tuple[ServerConfig, ...]:
@@ -78,11 +101,15 @@ class ServerRegistry:
 
     async def connect(self, name: str) -> McpClient:
         """Connect a server and refresh its metadata cache."""
+        client, _ = await self.connect_with_added(name)
+        return client
+
+    async def connect_with_added(self, name: str) -> tuple[McpClient, tuple[str, ...]]:
         self._assert_active()
-        client, _ = await self._ensure_connected(
+        client, _, added = await self._ensure_connected(
             name, refresh=True, allow_spawn=True, lease=False
         )
-        return client
+        return client, added
 
     async def disconnect(self, name: str) -> None:
         self._assert_active()
@@ -93,9 +120,17 @@ class ServerRegistry:
         qualified_name: str,
         arguments: Mapping[str, JsonValue],
     ) -> ToolCallResult:
+        result, _ = await self.call_tool_with_added(qualified_name, arguments)
+        return result
+
+    async def call_tool_with_added(
+        self,
+        qualified_name: str,
+        arguments: Mapping[str, JsonValue],
+    ) -> tuple[ToolCallResult, tuple[str, ...]]:
         self._assert_active()
         managed, tool_name = self._resolve_server(qualified_name)
-        client, managed = await self._ensure_connected(
+        client, managed, added = await self._ensure_connected(
             managed.config.name,
             refresh=False,
             allow_spawn=managed.config.lifecycle != "eager",
@@ -111,14 +146,14 @@ class ServerRegistry:
                 raise McpError(self._unknown_tool_message(qualified_name))
             result = await client.call_tool(tool_name, arguments)
             call_succeeded = True
-            return result
+            return result, added
         finally:
             self._release_use(managed, succeeded=call_succeeded)
 
     async def ping(self, name: str) -> None:
         self._assert_active()
         managed = self._get(name)
-        client, managed = await self._ensure_connected(
+        client, managed, _ = await self._ensure_connected(
             name,
             refresh=False,
             allow_spawn=managed.config.lifecycle != "eager",
@@ -163,6 +198,17 @@ class ServerRegistry:
         )
         for managed in self._managed.values():
             managed.state = "stopped"
+
+    def set_tool_discovery_callback(
+        self, callback: ToolDiscoveryCallback | None
+    ) -> None:
+        self._assert_active()
+        self._tool_discovery_callback = callback
+
+    def namespace_available(self, server_name: str) -> bool:
+        self._assert_active()
+        owners = self._namespace_owners.get(sanitize_server_name(server_name), ())
+        return owners == (server_name,)
 
     def last_activity(self, name: str) -> float | None:
         self._assert_active()
@@ -210,18 +256,21 @@ class ServerRegistry:
         refresh: bool,
         allow_spawn: bool,
         lease: bool,
-    ) -> tuple[McpClient, _ManagedServer]:
+    ) -> tuple[McpClient, _ManagedServer, tuple[str, ...]]:
         managed = self._get(name)
         async with managed.lock:
             self._assert_active()
             if managed.client is not None and managed.client.connected:
                 managed.state = "ready"
-                if refresh:
+                added = (
                     await self._refresh_cache(managed, managed.client)
+                    if refresh
+                    else ()
+                )
                 if lease:
                     managed.in_flight += 1
                 self._record_activity(managed)
-                return managed.client, managed
+                return managed.client, managed, added
             if not allow_spawn:
                 raise McpError(
                     f"MCP server `{name}` is disconnected; call connect to restart it"
@@ -240,7 +289,7 @@ class ServerRegistry:
             try:
                 await client.connect()
                 self._assert_active()
-                await self._refresh_cache(managed, client)
+                added = await self._refresh_cache(managed, client)
             except BaseException:
                 managed.state = "cold" if self._active else "stopped"
                 if managed.client is client:
@@ -251,17 +300,19 @@ class ServerRegistry:
             if lease:
                 managed.in_flight += 1
             self._record_activity(managed)
-            return client, managed
+            return client, managed, added
 
-    async def _refresh_cache(self, managed: _ManagedServer, client: McpClient) -> None:
-        tools = await client.list_tools()
-        self.cache.write(
-            managed.config,
-            (
-                ToolMetadata(tool.name, tool.description, tool.input_schema)
-                for tool in tools
-            ),
+    async def _refresh_cache(
+        self, managed: _ManagedServer, client: McpClient
+    ) -> tuple[str, ...]:
+        tools = tuple(
+            ToolMetadata(tool.name, tool.description, tool.input_schema)
+            for tool in await client.list_tools()
         )
+        self.cache.write(managed.config, tools)
+        if self._tool_discovery_callback is None:
+            return ()
+        return self._tool_discovery_callback(managed.config, tools)
 
     async def _disconnect_managed(
         self,
@@ -346,9 +397,13 @@ class ServerRegistry:
         if "__" not in qualified_name:
             raise McpError(self._unknown_tool_message(qualified_name))
         prefix, tool_name = qualified_name.split("__", 1)
-        for managed in self._managed.values():
-            if sanitize_server_name(managed.config.name) == prefix and tool_name:
-                return managed, tool_name
+        owners = self._namespace_owners.get(prefix, ())
+        if len(owners) > 1:
+            raise McpError(
+                f"Ambiguous MCP server namespace `{prefix}`: {', '.join(owners)}"
+            )
+        if len(owners) == 1 and tool_name:
+            return self._managed[owners[0]], tool_name
         raise McpError(self._unknown_tool_message(qualified_name))
 
     def _unknown_tool_message(self, target: str) -> str:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from tau_agent.messages import TextContent
 from tau_agent.tools import (
     AgentTool,
     AgentToolResult,
@@ -16,9 +15,9 @@ from tau_agent.types import JSONValue
 
 from .client import JsonValue as McpJsonValue
 from .client import McpError
+from .direct import text_result, tool_call_result
 from .registry import ServerRegistry  # ty: ignore[unresolved-import]
 
-_OUTPUT_LIMIT = 256 * 1024
 _PARAMETERS: Mapping[str, JSONValue] = {
     "type": "object",
     "properties": {
@@ -75,10 +74,12 @@ def create_proxy_tool(registry: ServerRegistry) -> AgentTool:
             if not isinstance(name, str):
                 return _text("`connect` must be a server name string.")
             try:
-                await registry.connect(name)
+                _, added = await registry.connect_with_added(name)
             except McpError as exc:
                 return _text(str(exc))
-            return _text(f'MCP server "{name}" connected and metadata refreshed.')
+            return _text(
+                f'MCP server "{name}" connected and metadata refreshed.', added
+            )
         if "disconnect" in arguments:
             name = arguments["disconnect"]
             if not isinstance(name, str):
@@ -96,16 +97,10 @@ def create_proxy_tool(registry: ServerRegistry) -> AgentTool:
             if isinstance(parsed_args, str):
                 return _text(parsed_args)
             try:
-                result = await registry.call_tool(target, parsed_args)
+                result, added = await registry.call_tool_with_added(target, parsed_args)
             except McpError as exc:
                 return _text(str(exc))
-            texts: list[str] = []
-            for item in result.content:
-                value = item.get("text")
-                if item.get("type") == "text" and isinstance(value, str):
-                    texts.append(value)
-            text = "\n".join(texts) or "MCP tool returned no text content."
-            return _text(_truncate_output(text))
+            return tool_call_result(result, added)
         return _text("Provide one of: search, tool, connect, or disconnect.")
 
     return AgentTool(
@@ -121,25 +116,12 @@ def create_proxy_tool(registry: ServerRegistry) -> AgentTool:
     )
 
 
-def _text(message: str) -> AgentToolResult:
-    return AgentToolResult(content=[TextContent(text=message)])
+def _text(message: str, added: tuple[str, ...] = ()) -> AgentToolResult:
+    return text_result(message, added)
 
 
 def _one_line(value: str) -> str:
     return " ".join(value.split())
-
-
-def _truncate_output(value: str) -> str:
-    encoded = value.encode()
-    if len(encoded) <= _OUTPUT_LIMIT:
-        return value
-    note = (
-        f"\n\n[truncated MCP output: original {len(encoded)} bytes; "
-        f"limit {_OUTPUT_LIMIT} bytes]"
-    )
-    budget = _OUTPUT_LIMIT - len(note.encode())
-    prefix = encoded[:budget].decode(errors="ignore")
-    return prefix + note
 
 
 def _tool_arguments(value: JSONValue) -> Mapping[str, McpJsonValue] | str:
