@@ -20,7 +20,7 @@
 
 ### Routing and authority
 
-- Read `docs/agents/artifacts.md` for the project artifact mapping and load the `planning-contract` skill for artifact classification and planning handoffs; read `docs/agents/issue-tracker.md` and `docs/agents/domain.md` when their scope applies. Preserve established project conventions.
+- Read `project/agents/artifacts.md` for the project artifact mapping and load the `planning-contract` skill for artifact classification and planning handoffs; read `project/agents/issue-tracker.md` and `project/agents/domain.md` when their scope applies. Preserve established project conventions.
 - Use `shape-design` for unresolved behavior/design choices, `write-implementation-plan` for approved multi-step work, and `orchestrate-implementation` to execute approved work. Do not turn a trivial edit into a planning exercise.
 - Default orchestrated execution to `supervised`: builtin `worker` may implement and validate, but candidate assembly, integration, and publication retain explicit approval gates.
 - Route implementation to builtin `worker` and, when required by the selected policy, independent review to a fresh read-only builtin `reviewer`; confirm both are executable before dispatch and record the resolved names in the run manifest.
@@ -32,8 +32,8 @@
 ### Documentation map
 
 - `CONTEXT.md`: canonical domain vocabulary for the whole repository.
-- `docs/adr/`: accepted architecture decisions.
-- `docs/agents/`: workflow, tracker, and artifact-map configuration.
-- `docs/specs/` or the configured tracker: feature behavior and acceptance.
+- `project/adr/`: accepted architecture decisions.
+- `project/agents/`: workflow, tracker, and artifact-map configuration.
+- `project/specs/` or the configured tracker: feature behavior and acceptance.
 - implementation plans/tickets: execution entry points and explicit source references.
 <!-- pi-implementation-orchestrator:end -->
