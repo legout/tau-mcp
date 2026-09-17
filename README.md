@@ -8,6 +8,7 @@ Native per-server tools are available as an explicit opt-in.
 - Design: [`docs/specs/0001-mcp-client-extension.md`](docs/specs/0001-mcp-client-extension.md)
 - Decision record: [`docs/adr/0001-proxy-first-stdlib-client.md`](docs/adr/0001-proxy-first-stdlib-client.md)
 - Runtime: Tau 0.4.4, Python 3.12 or newer, and the Python standard library
+- Current release: [`v0.1.0`](https://github.com/legout/tau-mcp/releases/tag/v0.1.0)
 
 ## Install
 
