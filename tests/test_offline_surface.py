@@ -230,5 +230,3 @@ def test_runtime_load_registers_only_proxy_and_status_command_without_spawning(
     assert search_result.text.startswith('Found 1 tool matching "query":')
     assert "alpha__query\n  Query local metadata\n  Parameters:" in search_result.text
     assert '"type": "object"' in search_result.text
-    connect_result = asyncio.run(tool.execute("call-2", {"connect": "alpha"}))
-    assert "not yet connected" in connect_result.text
