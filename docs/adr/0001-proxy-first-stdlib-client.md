@@ -1,6 +1,6 @@
 # ADR 0001: Proxy-first architecture on a stdlib stdio client
 
-Status: Proposed (design approved in direction on 2026-09-15; spec review pending)
+Status: Accepted (direction approved on 2026-09-15; revised v1 scope approved on 2026-09-16)
 
 ## Context
 
@@ -32,8 +32,8 @@ sampling, and the interactive panel are explicitly out of v1 scope.
   ping, notifications) is small and testable with a fixture server script;
   protocol edge cases the SDK would absorb are ours to handle, and the scope
   fence (stdio only) keeps that bounded.
-- No dependency-management fragility: the extension runs on any Tau install
-  with Python ≥3.11 stdlib.
+- No dependency-management fragility: the extension uses only the stdlib
+  available in Tau 0.4.4's Python ≥3.12 runtime.
 - Servers needing HTTP transport or OAuth stay unreachable until a later
   phase; the config schema reserves those fields so configs are forward-
   compatible.

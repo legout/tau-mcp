@@ -1,9 +1,9 @@
 # Spec 0001: MCP client extension for Tau (proxy-first)
 
-Status: **Proposed** — approaches and scope approved by the owner on
-2026-09-15 (pi-mcp-adapter architecture; Tau-native global config at
-`~/.tau/mcp.json`; stdlib-only, stdio v1; repository root). Pending the owner's
-review of this revised specification before implementation.
+Status: **Approved** — original direction approved by the owner on 2026-09-15;
+revised v1 scope approved on 2026-09-16 (pi-mcp-adapter architecture;
+Tau-native global config at `~/.tau/mcp.json`; stdlib-only, stdio v1;
+status-only `/mcp`; repository root).
 
 ## Goal
 
@@ -28,8 +28,8 @@ configured in the global Tau MCP config.
 
 ```
 src/tau_mcp/
-  extension.py      setup(tau): merge configs, start lifecycle, register tool + /mcp
-  config.py         load + merge + validate config sources; ${VAR} expansion
+  extension.py      setup(tau): load config, start lifecycle, register tool + /mcp
+  config.py         load + validate global config; ${VAR} expansion
   cache.py          metadata cache at ~/.tau/mcp-cache/<server>.json
   client.py         stdio JSON-RPC 2.0 MCP client (spawn, handshake, call, close)
   registry.py       per-server state machine: cold -> connecting -> ready -> stopped
@@ -40,7 +40,8 @@ tests/
   test_*.py
 ```
 
-Stdlib-only (`subprocess`, `asyncio`, `json`, `urllib.parse`). Packaging:
+Stdlib-only at runtime (`subprocess`, `asyncio`, `json`, `urllib.parse`) on
+Tau 0.4.4 / Python ≥3.12. Packaging:
 `[tool.tau] extensions = ["src/tau_mcp/extension.py"]`.
 
 ## Interfaces
@@ -120,8 +121,10 @@ when the digest changes. Search prefers fresh cache; a cold cache makes
 
 ### `/mcp` command (text)
 
-`/mcp` prints per-server: name, state, cached tool count, and cache age. `/mcp connect <server>` and `/mcp disconnect <server>` wrap
-the proxy operations. Interactive panel UI is a later phase.
+`/mcp` prints per-server: name, state, cached tool count, and cache age.
+Connect and disconnect remain `mcp` proxy operations because Tau 0.4.4
+extension command handlers are synchronous. Interactive panel UI is a later
+phase.
 
 ## Data flow
 
@@ -150,15 +153,15 @@ already match the schema). Nothing reads `.mcp.json` directly; the file stays
 for other hosts.
 
 agentmemory coexistence (A2): configuring agentmemory's MCP server here
-exposes `mcp__<name>__memory_*` proxy targets alongside tau-agentmemory's
-native `memory_*` tools; no name conflicts.
+exposes `<name>__memory_*` proxy targets through `mcp` alongside
+tau-agentmemory's native `memory_*` tools; no name conflicts.
 
 ## Testing
 
 Hermetic pytest: `fake_mcp_server.py` (a Python stdio script speaking
 initialize/tools-list/tools/call, with fault injection: slow handshake, crash
-on call, huge result). Unit tests: config merge + precedence + expansion;
-digest invalidation; name sanitization; idle timer; cancellation path;
+on call, huge result). Unit tests: config parsing + duplicate diagnostics +
+expansion; digest invalidation; name sanitization; idle timer; cancellation path;
 generation teardown. Extension loading through the real `ExtensionRuntime.load`
 with `include_resource_dirs=False`.
 
@@ -181,3 +184,5 @@ with `include_resource_dirs=False`.
 - 2026-09-16, owner: v1 uses only `~/.tau/mcp.json`; trusted project config is
   deferred until Tau exposes post-decision trust state. Keep stderr in the
   bounded error buffer and defer live debug streaming.
+- 2026-09-16, owner: `/mcp` is status-only in v1; async connect and disconnect
+  remain proxy-tool operations.

@@ -8,4 +8,4 @@ support to Tau without burning the context window — a port of the proven
 - Design: `docs/specs/0001-mcp-client-extension.md`
 - Decision record: `docs/adr/0001-proxy-first-stdlib-client.md`
 
-Status: specification phase — not yet implemented.
+Status: approved specification and implementation plan — not yet implemented.
