@@ -18,6 +18,7 @@ from .client import JsonValue as McpJsonValue
 from .client import McpError
 from .registry import ServerRegistry  # ty: ignore[unresolved-import]
 
+_OUTPUT_LIMIT = 256 * 1024
 _PARAMETERS: Mapping[str, JSONValue] = {
     "type": "object",
     "properties": {
@@ -103,7 +104,8 @@ def create_proxy_tool(registry: ServerRegistry) -> AgentTool:
                 value = item.get("text")
                 if item.get("type") == "text" and isinstance(value, str):
                     texts.append(value)
-            return _text("\n".join(texts) or "MCP tool returned no text content.")
+            text = "\n".join(texts) or "MCP tool returned no text content."
+            return _text(_truncate_output(text))
         return _text("Provide one of: search, tool, connect, or disconnect.")
 
     return AgentTool(
@@ -125,6 +127,19 @@ def _text(message: str) -> AgentToolResult:
 
 def _one_line(value: str) -> str:
     return " ".join(value.split())
+
+
+def _truncate_output(value: str) -> str:
+    encoded = value.encode()
+    if len(encoded) <= _OUTPUT_LIMIT:
+        return value
+    note = (
+        f"\n\n[truncated MCP output: original {len(encoded)} bytes; "
+        f"limit {_OUTPUT_LIMIT} bytes]"
+    )
+    budget = _OUTPUT_LIMIT - len(note.encode())
+    prefix = encoded[:budget].decode(errors="ignore")
+    return prefix + note
 
 
 def _tool_arguments(value: JSONValue) -> Mapping[str, McpJsonValue] | str:

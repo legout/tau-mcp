@@ -28,10 +28,13 @@ COMPATIBLE_PROTOCOL_VERSIONS = frozenset(
     }
 )
 _STDERR_LIMIT = 16 * 1024
+_FRAME_LIMIT = 1024 * 1024
 
 
 class McpError(RuntimeError):
     """A server-named MCP transport or protocol failure."""
+
+    detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +69,9 @@ class McpClient:
         self._pending: dict[int, asyncio.Future[JsonValue]] = {}
         self._next_id = 1
         self._connect_lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
+        self._ignored_response_ids: deque[int] = deque(maxlen=256)
         self._stderr_chunks: deque[bytes] = deque()
         self._stderr_size = 0
         self._ready = False
@@ -94,6 +99,7 @@ class McpClient:
             self._closing = False
             self._stderr_chunks.clear()
             self._stderr_size = 0
+            self._ignored_response_ids.clear()
             try:
                 self._process = await asyncio.create_subprocess_exec(
                     self.server.command,
@@ -103,6 +109,7 @@ class McpClient:
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.server.cwd,
                     env={**os.environ, **self.server.env},
+                    limit=_FRAME_LIMIT,
                 )
             except OSError as exc:
                 raise self._error(
@@ -133,7 +140,7 @@ class McpClient:
                 await self._notify("notifications/initialized", {})
                 self._ready = True
             except BaseException:
-                await self.close()
+                await self.close(force=True)
                 raise
 
     async def list_tools(self) -> tuple[McpTool, ...]:
@@ -163,7 +170,9 @@ class McpClient:
         self, name: str, arguments: Mapping[str, JsonValue]
     ) -> ToolCallResult:
         result = await self._request(
-            "tools/call", {"name": name, "arguments": dict(arguments)}
+            "tools/call",
+            {"name": name, "arguments": dict(arguments)},
+            cancel_on_timeout=True,
         )
         if not isinstance(result, dict):
             raise self._error("tools/call result must be an object")
@@ -185,45 +194,47 @@ class McpClient:
         if not isinstance(result, dict):
             raise self._error("ping result must be an object")
 
-    async def close(self) -> None:
-        if self._closing:
-            return
-        self._closing = True
-        self._ready = False
-        self._fail_pending(self._error("connection closed"))
-        process = self._process
-        if process is not None:
-            if process.stdin is not None:
-                process.stdin.close()
-            if process.returncode is None:
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=1)
-                except TimeoutError:
+    async def close(self, *, force: bool = False) -> None:
+        async with self._close_lock:
+            self._closing = True
+            self._ready = False
+            self._fail_pending(self._error("connection closed"))
+            process = self._process
+            if process is not None:
+                if process.returncode is None and force:
                     with suppress(ProcessLookupError):
                         process.terminate()
+                elif process.stdin is not None:
+                    process.stdin.close()
+                if process.returncode is None:
                     try:
                         await asyncio.wait_for(process.wait(), timeout=1)
                     except TimeoutError:
                         with suppress(ProcessLookupError):
-                            process.kill()
-                        await process.wait()
-            else:
-                await process.wait()
-        current = asyncio.current_task()
-        tasks = [
-            task
-            for task in (self._reader_task, self._stderr_task)
-            if task is not None and task is not current
-        ]
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._process = None
-        self._reader_task = None
-        self._stderr_task = None
-        self._closing = False
+                            process.terminate()
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=1)
+                        except TimeoutError:
+                            with suppress(ProcessLookupError):
+                                process.kill()
+                            await process.wait()
+                else:
+                    await process.wait()
+            current = asyncio.current_task()
+            tasks = [
+                task
+                for task in (self._reader_task, self._stderr_task)
+                if task is not None and task is not current
+            ]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._process = None
+            self._reader_task = None
+            self._stderr_task = None
+            self._closing = False
 
     async def _request(
         self,
@@ -232,6 +243,7 @@ class McpClient:
         *,
         timeout: float | None = None,
         allow_unready: bool = False,
+        cancel_on_timeout: bool = False,
     ) -> JsonValue:
         if not allow_unready and not self.connected:
             raise self._error("server is not connected")
@@ -258,6 +270,15 @@ class McpClient:
             )
             return await asyncio.wait_for(asyncio.shield(future), timeout=deadline)
         except TimeoutError as exc:
+            if cancel_on_timeout:
+                self._ignored_response_ids.append(request_id)
+                future.cancel()
+                self._pending.pop(request_id, None)
+                with suppress(McpError):
+                    await self._notify(
+                        "notifications/cancelled",
+                        {"requestId": request_id, "reason": "Request timed out"},
+                    )
             raise self._error(f"request `{method}` timed out") from exc
         finally:
             self._pending.pop(request_id, None)
@@ -282,7 +303,7 @@ class McpClient:
     async def _read_stdout(self) -> None:
         process = self._process
         assert process is not None and process.stdout is not None
-        failure: McpError | None = None
+        failure_detail: str | None = None
         try:
             while line := await process.stdout.readline():
                 try:
@@ -291,18 +312,32 @@ class McpClient:
                     raise self._error("received malformed JSON-RPC frame") from exc
                 self._handle_message(message)
             if not self._closing:
-                failure = self._error("server closed stdout; retry the request")
+                failure_detail = "server closed stdout; retry the request"
         except asyncio.CancelledError:
             raise
+        except ValueError:
+            failure_detail = f"JSON-RPC frame exceeds {_FRAME_LIMIT} bytes"
         except McpError as exc:
-            failure = exc
+            failure_detail = exc.detail or str(exc)
         finally:
             self._ready = False
-            if failure is not None:
-                self._fail_pending(failure)
+            if failure_detail is not None:
                 if process.returncode is None:
                     with suppress(ProcessLookupError):
                         process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    except TimeoutError:
+                        with suppress(ProcessLookupError):
+                            process.kill()
+                        await process.wait()
+                stderr_task = self._stderr_task
+                if (
+                    stderr_task is not None
+                    and stderr_task is not asyncio.current_task()
+                ):
+                    await asyncio.gather(stderr_task, return_exceptions=True)
+                self._fail_pending(self._error(failure_detail))
             if self._on_disconnect is not None:
                 self._on_disconnect()
 
@@ -324,6 +359,9 @@ class McpClient:
         response_id = message["id"]
         if not isinstance(response_id, int) or isinstance(response_id, bool):
             raise self._error("received response with invalid request ID")
+        if response_id in self._ignored_response_ids:
+            self._ignored_response_ids.remove(response_id)
+            return
         future = self._pending.get(response_id)
         if future is None:
             raise self._error(f"received mismatched response ID {response_id}")
@@ -362,4 +400,6 @@ class McpClient:
     def _error(self, message: str) -> McpError:
         stderr = self.stderr_text.strip()
         suffix = f"; stderr: {stderr}" if stderr else ""
-        return McpError(f"MCP server `{self.server.name}`: {message}{suffix}")
+        error = McpError(f"MCP server `{self.server.name}`: {message}{suffix}")
+        error.detail = message
+        return error
