@@ -1,0 +1,28 @@
+[project]
+name = "tau-mcp"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.tau]
+extensions = ["src/tau_mcp/extension.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ty.environment]
+extra-paths = ["src"]
+
+[tool.ty.rules]
+unused-ignore-comment = "ignore"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+    "tau-ai==0.4.4",
+    "ty>=0.0.81",
+]
