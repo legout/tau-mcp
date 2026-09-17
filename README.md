@@ -49,6 +49,15 @@ The top-level shape is Claude-compatible:
       "includeTools": ["run_*"],
       "excludeTools": ["*_unsafe"],
       "disabled": false
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/me/projects"
+      ],
+      "lifecycle": "lazy"
     }
   },
   "settings": {
@@ -75,6 +84,11 @@ Per-server fields are:
 server entries are skipped with a diagnostic rather than blocking the session.
 HTTP-oriented fields such as `url`, `headers`, and `auth` are diagnosed as
 unsupported in v1.
+
+The `filesystem` entry uses the official
+[`@modelcontextprotocol/server-filesystem`](https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem)
+server. Replace `/home/me/projects` with the directories Tau may access; the
+server cannot access paths outside that allowlist.
 
 ### Migrating ariadne from `.mcp.json`
 
